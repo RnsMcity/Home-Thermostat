@@ -1,4 +1,5 @@
 #include "workspace_states.h"
+#include "debug_uart.h"
 
 /* ---------------------------------------------------------------------------
  * Forward declarations
@@ -28,9 +29,9 @@ int main(void)
 
     /* Board-level peripheral initialisation provided by CubeMX / BSP */
     SystemClock_Config();
-    // BSP_LCD_Init();          /* 800×480 RGB LCD via LTDC + SDRAM */
-    // BSP_UART_Init();         /* UART @ 115200 baud for host daemon */
-    // BSP_LED_Init();          /* WS2812B LED strip (PWM / SPI) */
+
+    /* Debug UART — redirects printf to USART2 @ 115200 baud (PA2/PA3) */
+    debug_uart_init();
 
     /* Application-level initialisation */
     g_parser = get_uart_parser_ptr();

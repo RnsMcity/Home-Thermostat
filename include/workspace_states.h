@@ -99,6 +99,22 @@ typedef struct {
 #define RGB(r, g, b)  ((rgb_color_t){ (r), (g), (b) })
 
 /* ---------------------------------------------------------------------------
+ * STM32469I-DISCO onboard LEDs (GPIO pins)
+ * LD1(Green)=PG6, LD2(Orange)=PD4, LD3(Red)=PD5, LD4(Blue)=PK3
+ * --------------------------------------------------------------------------- */
+#define DEMO_LED_GREEN_PORT   GPIOG
+#define DEMO_LED_GREEN_PIN    GPIO_PIN_6
+#define DEMO_LED_ORANGE_PORT  GPIOD
+#define DEMO_LED_ORANGE_PIN   GPIO_PIN_4
+#define DEMO_LED_RED_PORT     GPIOD
+#define DEMO_LED_RED_PIN      GPIO_PIN_5
+#define DEMO_LED_BLUE_PORT    GPIOK
+#define DEMO_LED_BLUE_PIN     GPIO_PIN_3
+
+/* Demo auto-cycle interval (ms) — 5 seconds between states */
+#define DEMO_CYCLE_INTERVAL_MS  5000U
+
+/* ---------------------------------------------------------------------------
  * Public API — workspace_states.c
  * --------------------------------------------------------------------------- */
 

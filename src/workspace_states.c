@@ -1,9 +1,15 @@
 #include "workspace_states.h"
 #include <string.h>
 #include <math.h>
+#include <stdio.h>
 
 /* Forward declaration — defined below, used in feed_byte */
 static void uart_parser_dispatch(uart_parser_t *p);
+
+/* ---------------------------------------------------------------------------
+ * Debug logging macro — uses printf via redirected stdout on USART2
+ * --------------------------------------------------------------------------- */
+#define DBG_LOG(fmt, ...)  printf("[DBG] " fmt "\r\n", ##__VA_ARGS__)
 
 /* ---------------------------------------------------------------------------
  * Module-level static state
@@ -17,10 +23,45 @@ static uart_parser_t     g_uart_parser;
 #define CELEBRATE_DURATION_MS   3000U
 static uint32_t g_celebrate_start_tick = 0;
 
-/* Idle LED gradient helpers ------------------------------------------------ */
-#define IDLE_GRADIENT_STEPS   64U
-static rgb_color_t idle_gradient[IDLE_GRADIENT_STEPS];
-static uint16_t    idle_gradient_idx = 0;
+/* Demo auto-cycle tracking ------------------------------------------------- */
+static uint32_t g_last_cycle_tick = 0;
+
+/* ---------------------------------------------------------------------------
+ * GPIO LED init for STM32469I-DISCO onboard LEDs
+ * LD1(Green)=PG6, LD2(Orange)=PD4, LD3(Red)=PD5, LD4(Blue)=PK3
+ * --------------------------------------------------------------------------- */
+
+static void demo_leds_init(void)
+{
+    GPIO_InitTypeDef gpio = { 0 };
+
+    __HAL_RCC_GPIOG_CLK_ENABLE();
+    __HAL_RCC_GPIOD_CLK_ENABLE();
+    __HAL_RCC_GPIOK_CLK_ENABLE();
+
+    /* Green LED (PG6) — default ON */
+    gpio.Pin   = DEMO_LED_GREEN_PIN;
+    gpio.Mode  = GPIO_MODE_OUTPUT_PP;
+    gpio.Pull  = GPIO_NOPULL;
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(DEMO_LED_GREEN_PORT, &gpio);
+    HAL_GPIO_WritePin(DEMO_LED_GREEN_PORT, DEMO_LED_GREEN_PIN, GPIO_PIN_SET);
+
+    /* Orange LED (PD4) — OFF */
+    gpio.Pin   = DEMO_LED_ORANGE_PIN;
+    HAL_GPIO_Init(DEMO_LED_ORANGE_PORT, &gpio);
+    HAL_GPIO_WritePin(DEMO_LED_ORANGE_PORT, DEMO_LED_ORANGE_PIN, GPIO_PIN_RESET);
+
+    /* Red LED (PD5) — OFF */
+    gpio.Pin   = DEMO_LED_RED_PIN;
+    HAL_GPIO_Init(DEMO_LED_RED_PORT, &gpio);
+    HAL_GPIO_WritePin(DEMO_LED_RED_PORT, DEMO_LED_RED_PIN, GPIO_PIN_RESET);
+
+    /* Blue LED (PK3) — OFF */
+    gpio.Pin   = DEMO_LED_BLUE_PIN;
+    HAL_GPIO_Init(DEMO_LED_BLUE_PORT, &gpio);
+    HAL_GPIO_WritePin(DEMO_LED_BLUE_PORT, DEMO_LED_BLUE_PIN, GPIO_PIN_RESET);
+}
 
 /* ---------------------------------------------------------------------------
  * State machine core
@@ -28,59 +69,87 @@ static uint16_t    idle_gradient_idx = 0;
 
 void state_machine_init(void)
 {
+    DBG_LOG("System initializing...");
     g_current_state = STATE_IDLE;
     notif_queue_init(&g_notif_queue);
     uart_parser_init(&g_uart_parser);
     memset(&g_telemetry, 0, sizeof(g_telemetry));
 
-    /* Pre-compute idle pastel rainbow gradient */
-    for (uint16_t i = 0; i < IDLE_GRADIENT_STEPS; i++) {
-        float t = (float)i / (float)IDLE_GRADIENT_STEPS;
-        /* Simple HSL→RGB approximation: slow pastel hue sweep */
-        uint8_t r = (uint8_t)(128 + 64 * sinf(t * 6.2832f));
-        uint8_t g = (uint8_t)(128 + 64 * sinf(t * 6.2832f + 2.0944f));
-        uint8_t b = (uint8_t)(128 + 64 * sinf(t * 6.2832f + 4.1888f));
-        idle_gradient[i] = RGB(r, g, b);
-    }
+    /* Initialize onboard LEDs */
+    demo_leds_init();
 
-    /* Kick off idle LED loop */
-    set_shelf_leds_raw(idle_gradient, IDLE_GRADIENT_STEPS);
+    /* Set initial LED pattern (IDLE = green on) */
+    g_last_cycle_tick = HAL_GetTick();
 }
 
 void state_machine_update(uint32_t now_ms)
 {
+    static uint32_t last_log_tick = 0;
+
     switch (g_current_state) {
 
     case STATE_IDLE:
-        /* Slowly advance idle gradient index (~10 Hz update) */
-        if ((now_ms - g_celebrate_start_tick) % 100 == 0) {
-            idle_gradient_idx = (idle_gradient_idx + 1) % IDLE_GRADIENT_STEPS;
-            set_shelf_leds_raw(&idle_gradient[idle_gradient_idx],
-                               IDLE_GRADIENT_STEPS - idle_gradient_idx);
+        /* Green ON, others OFF — solid idle indicator */
+        HAL_GPIO_WritePin(DEMO_LED_GREEN_PORT, DEMO_LED_GREEN_PIN, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(DEMO_LED_ORANGE_PORT, DEMO_LED_ORANGE_PIN, GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(DEMO_LED_RED_PORT,    DEMO_LED_RED_PIN,    GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(DEMO_LED_BLUE_PORT,   DEMO_LED_BLUE_PIN,   GPIO_PIN_RESET);
+
+        /* Log state transition */
+        if (now_ms - last_log_tick >= 100) {
+            DBG_LOG("STATE: IDLE | CPU=%u%% GPU=%u%% NET_UP=%ld NET_DOWN=%ld",
+                    g_telemetry.cpu_load, g_telemetry.gpu_temp,
+                    (long)g_telemetry.net_speed_up, (long)g_telemetry.net_speed_down);
+            last_log_tick = now_ms;
+        }
+
+        /* Auto-cycle to next state after interval */
+        if ((now_ms - g_last_cycle_tick) >= DEMO_CYCLE_INTERVAL_MS) {
+            DBG_LOG("Transition → STATE_MEETING");
+            g_current_state = STATE_MEETING;
+            g_celebrate_start_tick = now_ms;
+            g_last_cycle_tick = now_ms;
         }
         break;
 
     case STATE_MEETING:
-        /* Solid crimson — already set by transition handler */
+        /* Red LED blink at ~2 Hz (250 ms on, 250 ms off) */
+        if ((now_ms % 500) < 250) {
+            HAL_GPIO_WritePin(DEMO_LED_RED_PORT, DEMO_LED_RED_PIN, GPIO_PIN_SET);
+        } else {
+            HAL_GPIO_WritePin(DEMO_LED_RED_PORT, DEMO_LED_RED_PIN, GPIO_PIN_RESET);
+        }
+        /* Other LEDs off during meeting */
+        HAL_GPIO_WritePin(DEMO_LED_GREEN_PORT, DEMO_LED_GREEN_PIN, GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(DEMO_LED_ORANGE_PORT, DEMO_LED_ORANGE_PIN, GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(DEMO_LED_BLUE_PORT,   DEMO_LED_BLUE_PIN,  GPIO_PIN_RESET);
+
+        /* Auto-cycle to next state after interval */
+        if ((now_ms - g_last_cycle_tick) >= DEMO_CYCLE_INTERVAL_MS) {
+            DBG_LOG("Transition → STATE_CELEBRATE");
+            g_current_state = STATE_CELEBRATE;
+            g_celebrate_start_tick = now_ms;
+            g_last_cycle_tick = now_ms;
+        }
         break;
 
     case STATE_CELEBRATE:
         if ((now_ms - g_celebrate_start_tick) >= CELEBRATE_DURATION_MS) {
+            DBG_LOG("Transition → STATE_IDLE (celebration ended)");
             /* Timer expired → restore idle */
             g_current_state = STATE_IDLE;
-            g_celebrate_start_tick = now_ms;
-            set_shelf_leds_raw(idle_gradient, IDLE_GRADIENT_STEPS);
+            g_last_cycle_tick = now_ms;
         } else {
-            /* High-frequency green/white chase — 50 Hz pattern */
-            static uint8_t chase_pos = 0;
-            if ((now_ms % 20) == 0) {
-                chase_pos = (chase_pos + 1) % IDLE_GRADIENT_STEPS;
-                for (uint16_t i = 0; i < IDLE_GRADIENT_STEPS; i++) {
-                    uint16_t idx = (chase_pos + i) % IDLE_GRADIENT_STEPS;
-                    idle_gradient[idx] = (i % 2 == 0) ? RGB((uint8_t)0, 255, 0) : RGB(255, 255, 255);
-                }
-                set_shelf_leds_raw(idle_gradient, IDLE_GRADIENT_STEPS);
-            }
+            /* Rapid chase: all 4 LEDs blink in sequence at ~10 Hz */
+            uint32_t phase = (now_ms / 100) % 4;
+            HAL_GPIO_WritePin(DEMO_LED_GREEN_PORT, DEMO_LED_GREEN_PIN,
+                              (phase == 0) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(DEMO_LED_ORANGE_PORT, DEMO_LED_ORANGE_PIN,
+                              (phase == 1) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(DEMO_LED_RED_PORT,    DEMO_LED_RED_PIN,
+                              (phase == 2) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(DEMO_LED_BLUE_PORT,   DEMO_LED_BLUE_PIN,
+                              (phase == 3) ? GPIO_PIN_SET : GPIO_PIN_RESET);
         }
         break;
     }
@@ -124,14 +193,15 @@ void handle_teams_status(teams_status_t status)
     case TEAMS_AVAILABLE:
         if (g_current_state == STATE_MEETING) {
             g_current_state = STATE_IDLE;
-            set_shelf_leds_raw(idle_gradient, IDLE_GRADIENT_STEPS);
+            g_last_cycle_tick = HAL_GetTick();
         }
         break;
 
     case TEAMS_BUSY:
         if (g_current_state != STATE_MEETING) {
             g_current_state = STATE_MEETING;
-            set_shelf_leds_raw(&(rgb_color_t){ 200, 10, 10 }, IDLE_GRADIENT_STEPS);
+            g_celebrate_start_tick = HAL_GetTick();
+            g_last_cycle_tick = HAL_GetTick();
         }
         break;
 
@@ -148,6 +218,7 @@ void handle_gitlab_mr(const char *branch_name)
 
     if (g_current_state != STATE_CELEBRATE) {
         g_celebrate_start_tick = HAL_GetTick();
+        g_last_cycle_tick = HAL_GetTick();
         g_current_state = STATE_CELEBRATE;
     }
 }
