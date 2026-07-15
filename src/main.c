@@ -1,5 +1,7 @@
 #include "stm32f4xx_hal.h"
 #include "workspace_states.h"
+#include "stm32469i_discovery_lcd.h"
+#include "stm32469i_discovery_sdram.h"
 
 
 UART_HandleTypeDef huart3;
@@ -16,11 +18,64 @@ void SysTick_Handler(void)
 
 int main(void)
 {
+    uint8_t lcd_status, sdram_status;
+
     HAL_Init();
 
     MX_USART3_UART_Init();
 
     state_machine_init();
+
+    /* Initialize SDRAM (framebuffer memory at 0xC0000000) */
+    sdram_status = BSP_SDRAM_Init();
+
+    /* Initialize LCD (DSI + LTDC + DMA2D + OTM8009A display IC) */
+    lcd_status = BSP_LCD_Init();
+
+    if (lcd_status == LCD_OK && sdram_status == SDRAM_OK)
+    {
+        /* Test pattern: fill with blue, draw colored rectangles and circles */
+        BSP_LCD_SelectLayer(LTDC_ACTIVE_LAYER_FOREGROUND);
+        BSP_LCD_Clear(LCD_COLOR_BLUE);
+
+        /* Top bar - red */
+        BSP_LCD_SetTextColor(LCD_COLOR_RED);
+        BSP_LCD_FillRect(0, 0, 800, 40);
+
+        /* Bottom bar - green */
+        BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
+        BSP_LCD_FillRect(0, 440, 800, 40);
+
+        /* Center circle - yellow */
+        BSP_LCD_SetTextColor(LCD_COLOR_YELLOW);
+        BSP_LCD_FillCircle(400, 240, 100);
+
+        /* Inner circle - white */
+        BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
+        BSP_LCD_FillCircle(400, 240, 60);
+
+        /* Text: "DESK COMMANDER" centered */
+        BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+        BSP_LCD_SetFont(&Font24);
+        BSP_LCD_DisplayStringAt(400, 230, (uint8_t *)"DESK", CENTER_MODE);
+        BSP_LCD_DisplayStringAt(400, 260, (uint8_t *)"COMMANDER", CENTER_MODE);
+
+        /* Status text */
+        BSP_LCD_SetFont(&Font16);
+        BSP_LCD_SetTextColor(LCD_COLOR_LIGHTGRAY);
+        BSP_LCD_DisplayStringAt(400, 300, (uint8_t *)"LCD OK", CENTER_MODE);
+    }
+    else
+    {
+        /* Display error - fill with red */
+        BSP_LCD_Clear(LCD_COLOR_RED);
+        BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
+        BSP_LCD_SetFont(&Font24);
+        if (lcd_status != LCD_OK)
+            BSP_LCD_DisplayStringAt(400, 200, (uint8_t *)"LCD FAIL", CENTER_MODE);
+        else
+            BSP_LCD_DisplayStringAt(400, 200, (uint8_t *)"SDRAM FAIL", CENTER_MODE);
+    }
 
     uint8_t rx_byte;
 
