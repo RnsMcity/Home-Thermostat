@@ -1,91 +1,139 @@
-#include "workspace_states.h"
-#include "debug_uart.h"
+#include "stm32f4xx_hal.h"
 
-/* ---------------------------------------------------------------------------
- * Forward declarations
- * --------------------------------------------------------------------------- */
-void SystemClock_Config(void);
 
-/* ---------------------------------------------------------------------------
- * UART receive buffer — filled by HAL_UART_RxCpltCallback (user-implemented)
- * --------------------------------------------------------------------------- */
-static uart_parser_t *g_parser;
+UART_HandleTypeDef huart3;
 
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+
+static void LED_Init(void);
+static void MX_USART3_UART_Init(void);
+
+
+void SysTick_Handler(void)
 {
-    /* Feed each received byte into the non-blocking parser */
-    extern uint8_t g_rx_byte;  /* Set by ISR before calling this callback */
-    uart_parser_feed_byte(g_parser, g_rx_byte);
+    HAL_IncTick();
 }
 
-/* ---------------------------------------------------------------------------
- * Main — master application entry point
- * --------------------------------------------------------------------------- */
+
+static void delay_loop(volatile uint32_t count)
+{
+    while (count--)
+    {
+        __NOP();
+    }
+}
+
 
 int main(void)
 {
-    /* HAL init (board-specific: clocks, SDRAM, LTDC, UART, Timers…) */
     HAL_Init();
 
-    /* Board-level peripheral initialisation provided by CubeMX / BSP */
-    SystemClock_Config();
 
-    /* Debug UART — redirects printf to USART2 @ 115200 baud (PA2/PA3) */
-    debug_uart_init();
+    LED_Init();
 
-    /* Application-level initialisation */
-    g_parser = get_uart_parser_ptr();
-    state_machine_init();
+    MX_USART3_UART_Init();
 
-    uint32_t last_tick = HAL_GetTick();
 
-    /* -------------------------------------------------------------------
-     * Main event loop — strictly non-blocking, 5 ms pacing via HAL ticks.
-     * No HAL_Delay() anywhere.
-     * ------------------------------------------------------------------- */
-    while (1) {
-        uint32_t now = HAL_GetTick();
+    uint8_t msg[] = "ABC\r\n";
 
-        /* Pace the loop to ~5 ms intervals */
-        if ((now - last_tick) < 5) continue;
-        last_tick = now;
 
-        /* Update async state machine with current tick count */
-        state_machine_update(now);
+    while (1)
+    {
+        HAL_GPIO_TogglePin(GPIOG, GPIO_PIN_6);
 
-        /* LVGL task handler — must be called periodically for UI rendering */
-        // lv_task_handler();
 
-        /* Yield to idle (optional: WFI instruction for power saving) */
-        __WFI();
+        HAL_UART_Transmit(
+            &huart3,
+            msg,
+            sizeof(msg)-1,
+            100
+        );
+
+
+        delay_loop(10000000);
     }
-
-    /* Unreachable — but silence compiler warnings */
-    return 0;
 }
 
-/* ---------------------------------------------------------------------------
- * Stub for SystemClock_Config — replace with CubeMX-generated implementation
- * --------------------------------------------------------------------------- */
-void SystemClock_Config(void)
+
+static void LED_Init(void)
 {
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+
     /*
-     * TODO: Replace with actual clock configuration from CubeMX.
-     *
-     * Target: STM32F469NIH6 @ 180 MHz
-     *   - HSE = 8 MHz crystal
-     *   - PLL → 180 MHz (VCO = 360 MHz, SYSCLK div = 2)
-     *   - AHB = 180 MHz, APB1 = 45 MHz, APB2 = 90 MHz
+     * STM32F469I-DISCO MB1189-B01
+     * User green LED = PG6
      */
+
+    __HAL_RCC_GPIOG_CLK_ENABLE();
+
+
+    GPIO_InitStruct.Pin = GPIO_PIN_6;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+
+
+    HAL_GPIO_Init(GPIOG, &GPIO_InitStruct);
 }
 
-/* ---------------------------------------------------------------------------
- * Error handler — halt on unexpected HAL failures
- * --------------------------------------------------------------------------- */
-void Error_Handler(void)
+
+static void MX_USART3_UART_Init(void)
 {
-    /* TODO: Flash error LED pattern or log via UART for debug */
-    while (1) {
-        __WFI();
-    }
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+
+    /*
+     * STM32F469I-DISCO MB1189-B01
+     *
+     * PB10 -> USART3_TX -> ST-LINK VCP
+     * PB11 -> USART3_RX
+     */
+
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    __HAL_RCC_USART3_CLK_ENABLE();
+
+
+    GPIO_InitStruct.Pin =
+        GPIO_PIN_10 |
+        GPIO_PIN_11;
+
+    GPIO_InitStruct.Mode =
+        GPIO_MODE_AF_PP;
+
+    GPIO_InitStruct.Pull =
+        GPIO_NOPULL;
+
+    GPIO_InitStruct.Speed =
+        GPIO_SPEED_FREQ_VERY_HIGH;
+
+    GPIO_InitStruct.Alternate =
+        GPIO_AF7_USART3;
+
+
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+
+    huart3.Instance = USART3;
+
+    huart3.Init.BaudRate = 115200;
+    huart3.Init.WordLength =
+        UART_WORDLENGTH_8B;
+
+    huart3.Init.StopBits =
+        UART_STOPBITS_1;
+
+    huart3.Init.Parity =
+        UART_PARITY_NONE;
+
+    huart3.Init.Mode =
+        UART_MODE_TX_RX;
+
+    huart3.Init.HwFlowCtl =
+        UART_HWCONTROL_NONE;
+
+    huart3.Init.OverSampling =
+        UART_OVERSAMPLING_16;
+
+
+    HAL_UART_Init(&huart3);
 }

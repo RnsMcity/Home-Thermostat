@@ -1,39 +1,52 @@
 # AGENTS.md — DESK COMMANDER / TELEMETRY HUB (STM32F469I-DISCO)
 
 ## Project type
-PlatformIO embedded C project for STM32F469I-DISCO. No source code exists yet; create `src/` and `include/`.
+PlatformIO embedded C for STM32F469NIH6 (Cortex-M4 @ 180MHz, 2MB Flash, 8MB SDRAM). Board in `platformio.ini` is `disco_f469ni`.
 
 ## Build & verify
 ```
 pio run            # build firmware
-pio run -t upload  # flash to board
-pio run -t monitor # serial monitor (115200 baud)
+pio run -t upload  # flash via ST-LINK (openocd)
+pio run -t monitor # serial monitor @ 115200 baud
 ```
 
 ## Architecture
-- **Board:** STM32F469NIH6 (Cortex-M4 @ 180MHz, 2MB Flash, 8MB SDRAM)
-- **Display:** 800×480 RGB LCD via LTDC + Chrom-ART/DMA2D acceleration
-- **Framework:** STM32Cube HAL (`platformio.ini` → `framework = stm32cube`)
-- **UI:** LVGL v9.1+ (`lvgl/lvgl@^9.1.0`)
-- **Comms:** UART @ 115200 baud from Python daemon on host (loopback)
-- **LEDs:** WS2812B addressable strip via PWM/SPI
+- **Display:** 800×480 RGB LCD via LTDC, Chrom-ART/DMA2D acceleration enabled (`lv_conf.h` → `LV_USE_GPU_STM32_DMA2D=1`)
+- **Framework:** STM32Cube HAL (`framework = stm32cube`, defines: `STM32F469xx`, `USE_HAL_DRIVER`, `F_CPU=180000000L`)
+- **UI:** LVGL v9.1+ (`lvgl/lvgl@^9.1.0`), RGB565 color depth, 8MB SDRAM for memory pool
+- **Comms:** UART3 @ 115200 baud on PB10/PB11 → ST-LINK VCP (loopback to host Python daemon)
+- **LEDs:** WS2812B strip — `set_shelf_leds_raw()` is a stub, not yet wired to SPI DMA or TIM PWM
 
-Full spec: `SPECIFICATION.md` — read it before generating UI screens, packet parsers, or state machines.
+Full spec: `SPECIFICATION.md` — read before generating UI screens, packet parsers, or state machines.
+
+## Source layout
+```
+src/main.c              — HAL init, UART3 setup, bare main loop (no LVGL/state machine yet)
+src/workspace_states.c  — State machine, telemetry handlers, UART parser, notification queue
+include/workspace_states.h — Types, command IDs, packet framing constants, public API
+include/debug_uart.h     — Debug UART declarations (printf redirect via USART3 → ST-LINK VCP)
+lv_conf.h               — LVGL config (800×480, RGB565, DMA2D GPU accel, 8MB mem pool)
+```
 
 ## Critical constraints (agents miss these)
 - **Never use `HAL_Delay()`** in main loops. Use `HAL_GetTick()`, non-blocking interrupts, or timer callbacks.
-- **No `malloc` inside embedded loops.** Static allocation only for LVGL objects and notification queues to avoid heap fragmentation.
+- **No `malloc` inside embedded loops.** Static allocation only — notification queue is a fixed ring buffer (`NOTIF_QUEUE_MAX=16`).
 - **Frame buffers live in external SDRAM.** Double-buffering via DMA is required.
 - **LVGL tick:** feed `lv_tick_inc()` from a Timer interrupt, not from the main loop.
-- **UART packet format:** `[0x02] [CMD_ID: 1B] [LEN: 1B] [DATA...] [END: 0x03]`. Command IDs in `SPECIFICATION.md` §4.
+- **UART packet format:** `[0x02] [CMD_ID: 1B] [LEN: 1B] [DATA...] [END: 0x03]`. Command IDs in `include/workspace_states.h` and `SPECIFICATION.md` §4.
+- **State machine auto-cycles** every 5s for demo (`DEMO_CYCLE_INTERVAL_MS`). Real operation is event-driven via UART commands.
 
-## File layout convention
-```
-src/          — .c source files (main, drivers, UI screens, protocol)
-include/      — .h headers
-platformio.ini — build config (board = disco_f469ni, lib_deps = lvgl/lvgl@^9.1.0)
-.pio/         — build artifacts (gitignored)
-```
+## Stub functions (need real implementations)
+- `set_shelf_leds_raw()` — TODO: WS2812B driver via SPI DMA or TIM PWM
+- `trigger_lvgl_ui_refresh()` — TODO: LVGL flush callback invocation
+
+## Onboard LEDs (for demo/debug, not the shelf strip)
+| LED | Pin    | Color  |
+|-----|--------|--------|
+| LD1 | PG6    | Green  |
+| LD2 | PD4    | Orange |
+| LD3 | PD5    | Red    |
+| LD4 | PK3    | Blue   |
 
 ## VS Code / IDE
 - Extension: `platformio.platformio-ide` (not cpptools-extension-pack)
