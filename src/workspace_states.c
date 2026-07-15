@@ -6,10 +6,22 @@
 /* Forward declaration — defined below, used in feed_byte */
 static void uart_parser_dispatch(uart_parser_t *p);
 
+/* UART handle — defined in main.c */
+extern UART_HandleTypeDef huart3;
+
 /* ---------------------------------------------------------------------------
- * Debug logging macro — uses printf via redirected stdout on USART2
+ * Debug logging — writes directly via HAL_UART_Transmit on USART3
  * --------------------------------------------------------------------------- */
-#define DBG_LOG(fmt, ...)  printf("[DBG] " fmt "\r\n", ##__VA_ARGS__)
+static void dbg_print(const char *msg)
+{
+    HAL_UART_Transmit(&huart3, (uint8_t *)msg, strlen(msg), 10);
+}
+
+#define DBG_LOG(fmt, ...) do { \
+    char _dbg_buf[128]; \
+    snprintf(_dbg_buf, sizeof(_dbg_buf), "[DBG] " fmt "\r\n", ##__VA_ARGS__); \
+    dbg_print(_dbg_buf); \
+} while(0)
 
 /* ---------------------------------------------------------------------------
  * Module-level static state
