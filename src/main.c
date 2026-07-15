@@ -1,10 +1,10 @@
 #include "stm32f4xx_hal.h"
+#include "workspace_states.h"
 
 
 UART_HandleTypeDef huart3;
 
 
-static void LED_Init(void);
 static void MX_USART3_UART_Init(void);
 
 
@@ -14,73 +14,32 @@ void SysTick_Handler(void)
 }
 
 
-static void delay_loop(volatile uint32_t count)
-{
-    while (count--)
-    {
-        __NOP();
-    }
-}
-
-
 int main(void)
 {
     HAL_Init();
 
-
-    LED_Init();
-
     MX_USART3_UART_Init();
 
+    state_machine_init();
 
-    uint8_t msg[] = "ABC\r\n";
-
+    uint8_t rx_byte;
 
     while (1)
     {
-        HAL_GPIO_TogglePin(GPIOG, GPIO_PIN_6);
+        state_machine_update(HAL_GetTick());
 
-
-        HAL_UART_Transmit(
-            &huart3,
-            msg,
-            sizeof(msg)-1,
-            100
-        );
-
-
-        delay_loop(10000000);
+        /* Non-blocking UART poll — feed each available byte to parser */
+        if (HAL_UART_Receive(&huart3, &rx_byte, 1, 0) == HAL_OK)
+        {
+            uart_parser_feed_byte(get_uart_parser_ptr(), rx_byte);
+        }
     }
-}
-
-
-static void LED_Init(void)
-{
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
-
-
-    /*
-     * STM32F469I-DISCO MB1189-B01
-     * User green LED = PG6
-     */
-
-    __HAL_RCC_GPIOG_CLK_ENABLE();
-
-
-    GPIO_InitStruct.Pin = GPIO_PIN_6;
-    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-
-
-    HAL_GPIO_Init(GPIOG, &GPIO_InitStruct);
 }
 
 
 static void MX_USART3_UART_Init(void)
 {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
-
 
     /*
      * STM32F469I-DISCO MB1189-B01
