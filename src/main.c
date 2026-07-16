@@ -1,89 +1,121 @@
+#include <stdio.h>
+#include <string.h>
+
 #include "stm32f4xx_hal.h"
 #include "workspace_states.h"
 #include "stm32469i_discovery_lcd.h"
 #include "stm32469i_discovery_sdram.h"
+#include "stm32469i_discovery.h"
 
-
+/* Peripheral Handlers */
 UART_HandleTypeDef huart3;
 
-
+/* Private Function Prototypes */
 static void MX_USART3_UART_Init(void);
+void SystemClock_Config(void);
 
+/* Cleaned up debug print helper */
+// void dbg_print(const char *str)
+// {
+//     HAL_UART_Transmit(&huart3, (uint8_t *)str, strlen(str), HAL_MAX_DELAY);
+// }
+
+#define DBG_LOG(fmt, ...) do { \
+    char _dbg_buf[128]; \
+    snprintf(_dbg_buf, sizeof(_dbg_buf), "[DBG] " fmt "\r\n", ##__VA_ARGS__); \
+    dbg_print(_dbg_buf); \
+} while(0)
+
+/* Progress LED toggle using LED_ORANGE (LED2) to avoid pin conflicts */
+static void progress_blink(void)
+{
+    BSP_LED_Toggle(LED_ORANGE);
+}
 
 void SysTick_Handler(void)
 {
     HAL_IncTick();
 }
 
-
 int main(void)
 {
-    uint8_t lcd_status, sdram_status;
+    volatile uint32_t *fb = (volatile uint32_t *)0xC0000000;
 
+    /* 1. Base Hardware Initialization */
     HAL_Init();
+    SystemClock_Config();
 
+    /* 2. Configure safe Status LED (LED_ORANGE is on PG6, safe from bus interfaces) */
+    BSP_LED_Init(LED_ORANGE);
+
+    /* 3. Give external hardware (ST-Link / Terminal) a moment to stabilize */
+    HAL_Delay(500);
+    progress_blink(); // Checkpoint 1
+
+    /* 4. State Machine setup */
+    state_machine_init();
+    progress_blink(); // Checkpoint 2
+
+    /* 5. Initialize SDRAM (Framebuffer memory base at 0xC0000000) */
+    if (BSP_SDRAM_Init() != SDRAM_OK) {
+        while (1) { 
+            BSP_LED_Toggle(LED_ORANGE); 
+            HAL_Delay(100); 
+        }
+    }
+    progress_blink(); // Checkpoint 3: SDRAM Configured
+
+    /* Verify basic SDRAM retention */
+    fb[0] = 0xDEADBEEF;
+    fb[1000] = 0x12345678;
+    HAL_Delay(10);
+    progress_blink(); // Checkpoint 4: SDRAM Integrity Verified
+
+    /* 6. Initialize LCD (DSI + LTDC + DMA2D + OTM8009A display driver) */
+    uint8_t lcd_status = BSP_LCD_InitEx(LCD_ORIENTATION_LANDSCAPE);
+    progress_blink(); // Checkpoint 5: LCD Screen Driver Ready
+
+    /* 7. Configure LTDC layers pointing to the working SDRAM base address */
+    BSP_LCD_LayerDefaultInit(LTDC_ACTIVE_LAYER_BACKGROUND, LCD_FB_START_ADDRESS);
+    BSP_LCD_LayerDefaultInit(LTDC_ACTIVE_LAYER_FOREGROUND, LCD_FB_START_ADDRESS);
+    BSP_LCD_SetLayerVisible(LTDC_ACTIVE_LAYER_BACKGROUND, ENABLE);
+    BSP_LCD_SetLayerVisible(LTDC_ACTIVE_LAYER_FOREGROUND, ENABLE);
+
+    /* Enable LTDC to DSI hardware routing */
+    extern DSI_HandleTypeDef hdsi_eval;
+    hdsi_eval.Instance->WCR |= DSI_WCR_LTDCEN;
+    progress_blink(); // Checkpoint 6: Video stream routed
+
+    /* 8. Initialize USART3 (Only after LCD clock changes have settled) */
     MX_USART3_UART_Init();
 
-    state_machine_init();
+    /* 9. Output System Information and Status to Terminal */
+    DBG_LOG("System online!");
+    DBG_LOG("SYSCLK = %lu Hz", HAL_RCC_GetSysClockFreq());
+    DBG_LOG("HCLK   = %lu Hz", HAL_RCC_GetHCLKFreq());
+    DBG_LOG("PCLK1  = %lu Hz", HAL_RCC_GetPCLK1Freq());
+    DBG_LOG("PCLK2  = %lu Hz", HAL_RCC_GetPCLK2Freq());
+    DBG_LOG("LCD Init Result Status: %u", lcd_status);
 
-    /* Initialize SDRAM (framebuffer memory at 0xC0000000) */
-    sdram_status = BSP_SDRAM_Init();
+    /* 10. Perform screen draw validation */
+    fb[0] = 0xFF0000FF;         /* Blue pixel at (0,0) */
+    fb[800 + 0] = 0xFFFF0000;    /* Red pixel at (1,0) */
+    fb[400*800 + 200] = 0xFF00FF00; /* Green pixel at (200, 400) */
+    progress_blink(); // Checkpoint 7: Raw writes to Framebuffer complete
 
-    /* Initialize LCD (DSI + LTDC + DMA2D + OTM8009A display IC) */
-    lcd_status = BSP_LCD_Init();
-
-    if (lcd_status == LCD_OK && sdram_status == SDRAM_OK)
-    {
-        /* Test pattern: fill with blue, draw colored rectangles and circles */
-        BSP_LCD_SelectLayer(LTDC_ACTIVE_LAYER_FOREGROUND);
-        BSP_LCD_Clear(LCD_COLOR_BLUE);
-
-        /* Top bar - red */
-        BSP_LCD_SetTextColor(LCD_COLOR_RED);
-        BSP_LCD_FillRect(0, 0, 800, 40);
-
-        /* Bottom bar - green */
-        BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
-        BSP_LCD_FillRect(0, 440, 800, 40);
-
-        /* Center circle - yellow */
-        BSP_LCD_SetTextColor(LCD_COLOR_YELLOW);
-        BSP_LCD_FillCircle(400, 240, 100);
-
-        /* Inner circle - white */
-        BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
-        BSP_LCD_FillCircle(400, 240, 60);
-
-        /* Text: "DESK COMMANDER" centered */
-        BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
-        BSP_LCD_SetFont(&Font24);
-        BSP_LCD_DisplayStringAt(400, 230, (uint8_t *)"DESK", CENTER_MODE);
-        BSP_LCD_DisplayStringAt(400, 260, (uint8_t *)"COMMANDER", CENTER_MODE);
-
-        /* Status text */
-        BSP_LCD_SetFont(&Font16);
-        BSP_LCD_SetTextColor(LCD_COLOR_LIGHTGRAY);
-        BSP_LCD_DisplayStringAt(400, 300, (uint8_t *)"LCD OK", CENTER_MODE);
-    }
-    else
-    {
-        /* Display error - fill with red */
-        BSP_LCD_Clear(LCD_COLOR_RED);
-        BSP_LCD_SetTextColor(LCD_COLOR_WHITE);
-        BSP_LCD_SetFont(&Font24);
-        if (lcd_status != LCD_OK)
-            BSP_LCD_DisplayStringAt(400, 200, (uint8_t *)"LCD FAIL", CENTER_MODE);
-        else
-            BSP_LCD_DisplayStringAt(400, 200, (uint8_t *)"SDRAM FAIL", CENTER_MODE);
-    }
+    /* Clear foreground using high-performance hardware acceleration (DMA2D) */
+    BSP_LCD_SelectLayer(LTDC_ACTIVE_LAYER_FOREGROUND);
+    BSP_LCD_Clear(LCD_COLOR_RED);
+    progress_blink(); // Checkpoint 8: Display cleared to solid Red
 
     uint8_t rx_byte;
 
+    /* Main Superloop */
     while (1)
     {
         state_machine_update(HAL_GetTick());
 
-        /* Non-blocking UART poll — feed each available byte to parser */
+        /* Retrieve bytes arriving over the VCP connection */
         if (HAL_UART_Receive(&huart3, &rx_byte, 1, 0) == HAL_OK)
         {
             uart_parser_feed_byte(get_uart_parser_ptr(), rx_byte);
@@ -91,63 +123,88 @@ int main(void)
     }
 }
 
-
 static void MX_USART3_UART_Init(void)
 {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
 
-    /*
-     * STM32F469I-DISCO MB1189-B01
-     *
-     * PB10 -> USART3_TX -> ST-LINK VCP
-     * PB11 -> USART3_RX
-     */
-
+    /* Enable peripheral and GPIO bank clocks */
     __HAL_RCC_GPIOB_CLK_ENABLE();
     __HAL_RCC_USART3_CLK_ENABLE();
 
-
-    GPIO_InitStruct.Pin =
-        GPIO_PIN_10 |
-        GPIO_PIN_11;
-
-    GPIO_InitStruct.Mode =
-        GPIO_MODE_AF_PP;
-
-    GPIO_InitStruct.Pull =
-        GPIO_NOPULL;
-
-    GPIO_InitStruct.Speed =
-        GPIO_SPEED_FREQ_VERY_HIGH;
-
-    GPIO_InitStruct.Alternate =
-        GPIO_AF7_USART3;
-
-
+    /* * Configure Pins:
+     * PB10 -> USART3_TX (Routed directly to ST-Link VCP)
+     * PB11 -> USART3_RX
+     */
+    GPIO_InitStruct.Pin       = GPIO_PIN_10 | GPIO_PIN_11;
+    GPIO_InitStruct.Mode      = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull      = GPIO_NOPULL;
+    GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF7_USART3;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-
-    huart3.Instance = USART3;
-
-    huart3.Init.BaudRate = 115200;
-    huart3.Init.WordLength =
-        UART_WORDLENGTH_8B;
-
-    huart3.Init.StopBits =
-        UART_STOPBITS_1;
-
-    huart3.Init.Parity =
-        UART_PARITY_NONE;
-
-    huart3.Init.Mode =
-        UART_MODE_TX_RX;
-
-    huart3.Init.HwFlowCtl =
-        UART_HWCONTROL_NONE;
-
-    huart3.Init.OverSampling =
-        UART_OVERSAMPLING_16;
-
+    huart3.Instance          = USART3;
+    huart3.Init.BaudRate     = 115200;
+    huart3.Init.WordLength   = UART_WORDLENGTH_8B;
+    huart3.Init.StopBits     = UART_STOPBITS_1;
+    huart3.Init.Parity       = UART_PARITY_NONE;
+    huart3.Init.Mode         = UART_MODE_TX_RX;
+    huart3.Init.HwFlowCtl    = UART_HWCONTROL_NONE;
+    huart3.Init.OverSampling = UART_OVERSAMPLING_16;
 
     HAL_UART_Init(&huart3);
+
+    /* * CLOCK WORKAROUND:
+     * To prevent HAL from calculating wrong register values due to dynamic LCD
+     * clock modifications, manually set USART3 BRR based on actual APB1 45 MHz clock.
+     */
+    uint32_t pclk1_actual = 45000000; // 45 MHz
+    USART3->BRR = (pclk1_actual + (huart3.Init.BaudRate / 2)) / huart3.Init.BaudRate;
+}
+
+void SystemClock_Config(void)
+{
+    RCC_ClkInitTypeDef RCC_ClkInitStruct;
+    RCC_OscInitTypeDef RCC_OscInitStruct;
+    HAL_StatusTypeDef ret = HAL_OK;
+
+    __HAL_RCC_PWR_CLK_ENABLE();
+    __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+
+    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+    RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+    RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+    RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+#if defined(USE_STM32469I_DISCO_REVA)
+    RCC_OscInitStruct.PLL.PLLM = 25;
+#else
+    RCC_OscInitStruct.PLL.PLLM = 8;
+#endif 
+    RCC_OscInitStruct.PLL.PLLN = 360;
+    RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
+    RCC_OscInitStruct.PLL.PLLQ = 7;
+    RCC_OscInitStruct.PLL.PLLR = 6;
+
+    ret = HAL_RCC_OscConfig(&RCC_OscInitStruct);
+    if(ret != HAL_OK)
+    {
+        while(1) { ; }
+    }
+
+    ret = HAL_PWREx_EnableOverDrive();
+    if(ret != HAL_OK)
+    {
+        while(1) { ; }
+    }
+
+    RCC_ClkInitStruct.ClockType = (RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2);
+    RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+    RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+    RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
+    RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
+
+    ret = HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5);
+    if(ret != HAL_OK)
+    {
+        while(1) { ; }
+    }
 }

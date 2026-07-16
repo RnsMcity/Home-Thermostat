@@ -12,7 +12,7 @@ extern UART_HandleTypeDef huart3;
 /* ---------------------------------------------------------------------------
  * Debug logging — writes directly via HAL_UART_Transmit on USART3
  * --------------------------------------------------------------------------- */
-static void dbg_print(const char *msg)
+void dbg_print(const char *msg)
 {
     HAL_UART_Transmit(&huart3, (uint8_t *)msg, strlen(msg), 10);
 }
