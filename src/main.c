@@ -2,7 +2,7 @@
 #include <string.h>
 
 #include "stm32f4xx_hal.h"
-#include "workspace_states.h"
+#include "thermostat_state.h"
 #include "lvgl_display.h"
 #include "ui_main_screen.h"
 #include "stm32469i_discovery_lcd.h"
@@ -16,12 +16,7 @@ UART_HandleTypeDef huart3;
 static void MX_USART3_UART_Init(void);
 void SystemClock_Config(void);
 
-/* Cleaned up debug print helper */
-// void dbg_print(const char *str)
-// {
-//     HAL_UART_Transmit(&huart3, (uint8_t *)str, strlen(str), HAL_MAX_DELAY);
-// }
-
+/* Debug logging goes through dbg_print() in thermostat_state.c */
 #define DBG_LOG(fmt, ...) do { \
     char _dbg_buf[128]; \
     snprintf(_dbg_buf, sizeof(_dbg_buf), "[DBG] " fmt "\r\n", ##__VA_ARGS__); \
@@ -60,8 +55,8 @@ int main(void)
     HAL_Delay(500);
     progress_blink(); // Checkpoint 1
 
-    /* 5. State Machine setup */
-    state_machine_init();
+    /* 5. Thermostat state model + onboard debug LEDs */
+    thermo_init();
     progress_blink(); // Checkpoint 2
 
     /* 6. Initialize SDRAM (Framebuffer memory base at 0xC0000000) */
@@ -130,7 +125,7 @@ int main(void)
     {
         lv_timer_handler(); /* non-blocking — renders pending UI work */
 
-        state_machine_update(HAL_GetTick());
+        thermo_update(HAL_GetTick());   /* demo drift + mode LED, non-blocking */
 
         /* Retrieve bytes arriving over the VCP connection */
         if (HAL_UART_Receive(&huart3, &rx_byte, 1, 0) == HAL_OK)

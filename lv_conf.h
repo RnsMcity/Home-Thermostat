@@ -34,10 +34,18 @@
  * ------------------------------------------------------------------------- */
 
 /* ---------------------------------------------------------------------------
- * Fonts — enable sizes as needed. The theme uses 14; the title uses 28.
+ * Fonts — enable sizes as needed. The theme default is 14; the thermostat UI
+ * uses 32 (mode labels) and 36 ("Current" / setpoint). The hero temperature
+ * digits come from generated fonts in src/ui_font_temp.c + ui_font_unit.c.
  * ------------------------------------------------------------------------- */
 #define LV_FONT_MONTSERRAT_14   1
-#define LV_FONT_MONTSERRAT_28   1
+#define LV_FONT_MONTSERRAT_32   1
+#define LV_FONT_MONTSERRAT_36   1
+
+/* The lv_font_conv output for the generated fonts is RLE-compressed
+ * (bitmap_format = LV_FONT_FMT_TXT_COMPRESSED). Without this, every glyph
+ * decode fails and labels using those fonts render blank. */
+#define LV_USE_FONT_COMPRESSED  1
 
 /* ---------------------------------------------------------------------------
  * Widgets needed for the UI screens (SPECIFICATION.md section 3)

@@ -1,102 +1,133 @@
-# SYSTEM SPECIFICATION: DESK COMMANDER & TELEMETRY HUB
+# SYSTEM SPECIFICATION: DIGITAL THERMOSTAT UI
 # Target Hardware: STM32F469I-DISCO
-# UI Framework: LVGL (v8.x or v9.x)
-# Author Engine: AI Coding Agent Prompt Spec
+# UI Framework: LVGL 9.x (software renderer, ARGB8888)
+# Reference Mockup: mockup-ui.jpg
 
 ## 1. SYSTEM ARCHITECTURE OVERVIEW
-The system operates as an asynchronous, single-core embedded workspace controller. 
-The STM32 manages the high-resolution capacitive touch display, local state machine, 
-and UI animations using hardware acceleration (Chrom-ART / DMA2D). 
+The system is a touch-operated digital thermostat front-end running on an STM32F469I-DISCO.
+The firmware owns the 800x480 DSI LCD (LVGL), capacitive touch input, and a local
+thermostat state model (mode + current temperature + setpoint).
 
-Because the hardware lacks onboard Wi-Fi, network payloads are processed by a local 
-host (Python Daemon/Home Server) and bridged to the STM32 via a lightweight transport layer.
+There is no onboard Wi-Fi or sensor hardware yet: in this phase every displayed value
+comes from a built-in demo simulation. A host daemon (Python) will later bridge real
+sensor data / HVAC control to the STM32 over UART; the packet framing and non-blocking
+parser already exist, only the command set changes (Section 5).
 
-Use code with caution.+------------------+         GitLab Webhooks / Teams Events|  Python Daemon   | <====== (Web Extension / Graph API)+--------+---------+|| [UART / Serial @ 115200 baud]| OR [Ethernet Raw Socket / lwIP]v+---------------------------------------+| STM32 DEV BOARD                       ||   +-------------------------------+   ||   | LVGL UI ENGINE                |   ||   | - Tab 0: Dashboard (PC Stats) |   ||   | - Tab 1: Focus (Timer)        |   ||   | - Tab 2: Lighting Control     |   ||   | - Tab 3: Git / Notifications  |   ||   +---------------+---------------+   ||                   |                   ||                   | [GPIO PWM / SPI]  ||                   v                   ||         [WS2812B LED Light Strip]     |+---------------------------------------+
+```
++---------------------------------------+
+| Host (future): Python daemon          |
+|   [UART @ 115200 baud - ST-LINK VCP]  |
+v---------------------------------------+
+| STM32F469I-DISCO                      |
+|   +-------------------------------+   |
+|   | LVGL UI (800x480)             |   |
+|   | - Hero temperature display    |   |
+|   | - Setpoint up/down controls   |   |
+|   | - Mode bar: HEAT/AC/FAN/AUTO  |   |
+|   +-------------------------------+   |
+|   Thermostat state model (demo sim)   |
++---------------------------------------+
+```
+
 ## 2. FIRMWARE & HARDWARE CONSTRAINTS (STM32)
-When generating code for this system, adhere to the following hardware limits:
-* **Display Configuration:** 800x480 resolution, 16-bit or 24-bit color depth (RGB565 / RGB888 depending on SDRAM configuration).
-* **Acceleration:** Leverage STM32 Chrom-ART (DMA2D) for LVGL rendering pipelines to keep CPU overhead under 15%.
-* **Memory Constraints:** UI assets (icons, custom fonts) must fit within external SDRAM allocation boundaries. Frame buffers must utilize double-buffering via DMA.
-* **Peripherals:** 
-  * UART / USART for inbound PC metrics and notifications.
-  * Timers configured for microsecond ticks to feed `lv_tick_inc()`.
-  * PWM / SPI data line allocated for WS2812B LED strip (or serial passthrough to an ESP/WLED module).
+* **Display:** 800x480 DSI LCD (OTM8009A) via LTDC, ARGB8888. LVGL's software renderer
+  draws directly into double-buffered SDRAM framebuffers; no DMA2D/Chrom-ART for LVGL.
+* **Memory:** Framebuffers and the 8 MB LVGL heap live in external SDRAM @0xC0000000
+  (layout in `lv_conf.h`). UI assets (fonts, icons) are compiled into flash; runtime
+  objects use static allocation only - no `malloc` inside loops.
+* **Peripherals:**
+  * UART3 @ 115200 baud on PB10/PB11 -> ST-LINK VCP (host link + debug output).
+  * I2C1 for the FT6206 touch controller (polled by an LVGL pointer indev).
+  * SysTick feeds `lv_tick_inc()`.
+* **Clocks:** This board's HSE crystal is 8 MHz. `-DHSE_VALUE=8000000UL` in
+  `platformio.ini` is mandatory - the framework default (25 MHz) stretches every HAL
+  tick and breaks DSI PHY timing.
 
 ## 3. LVGL UI LAYER ARCHITECTURE (800x480 Canvas)
-The UI uses a **Left Navigation Bar** variant layout. A fixed menu container handles screen routing, bypassing the stock `lv_tabview` swipe animations to optimize render performance.
+Single screen, no tabs or navigation. Reference: `mockup-ui.jpg`.
+**No "ST" logo anywhere in the UI.**
 
-### 3.1 Global Navigation Container (Left Anchor)
-* **Dimensions:** Width: 100px, Height: 480px.
-* **Widgets:** Vertical flex container containing 5 flat image-buttons:
-  1. `btn_nav_dash`: Dashboard Icon (Default active)
-  2. `btn_nav_focus`: Clock / Timer Icon
-  3. `btn_nav_light`: Bulb Icon
-  4. `btn_nav_notify`: Bell Icon (with absolute-positioned overlay red dot badge for unseen states)
-  5. `btn_nav_gitlab`: GitLab Logo
+### 3.1 Top Panel (y 0-320, background #E4E3E8)
+All text color: #3A3A3A.
 
-### 3.2 Display Screen Configurations
-* **Screen 1: Dashboard (Telemetry)**
-  * Three `lv_arc` elements scaled as half-circles mapping CPU Load (%), GPU Temp (°C), and RAM Usage (GB).
-  * One `lv_chart` (Type: Line) mapping live download/upload network bandwidth streams.
-* **Screen 2: Focus (Pomodoro)**
-  * Centered large `lv_label` showing countdown time (`MM:SS`).
-  * Concentric `lv_arc` indicating progress toward focus completion.
-  * Start/Pause/Reset controller buttons.
-* **Screen 3: Lighting Panel**
-  * One `lv_colorwheel` for custom shelf color casting.
-  * Linear `lv_slider` targeting global LED brightness adjustments.
-* **Screen 4: Notifications Log**
-  * Vertical scrolling `lv_list` populated dynamically via string manipulation queues.
-* **Screen 5: GitLab Overview**
-  * Kanban-style display grids highlighting open Merge Requests and repository stability tickers.
+* **`lbl_current`:** text "Current", Montserrat 36, centered at x=370, top y=45.
+* **Hero display** (flex row container, gap 10 px, centered at x=383, top y=112):
+  * `lbl_temp`: current temperature as a plain integer in the generated ~180 px font
+    (`ui_font_temp`, digits only), color #3A3A3A. This is the visual centerpiece.
+  * `lbl_unit`: "°F" in the generated ~108 px font (`ui_font_unit`), top-aligned with
+    the digits (superscript style, as in the mockup).
+* **Setpoint column** (buttons at x=610, width 96; content centered at x=658):
+  * `btn_setpoint_up`: 96x96 rounded button (radius 18), background #D2D3D7, chevron-up icon (48 px, color #45474B) centered, top y=36.
+  * `lbl_setpoint`: setpoint as `"%d°F"`, Montserrat 36, centered at x=658, y=168.
+  * `btn_setpoint_down`: identical to up with a chevron-down icon, top y=200.
 
-## 4. LIGHTWEIGHT SERIAL COMMUNICATION PROTOCOL
-To avoid heavy JSON processing on the STM32, the intermediate Python runtime sanitizes all webhook and scraping feeds into deterministic byte streams.
+### 3.2 Mode Bar (y 320-480, background #CBCACF)
+Four equal mode buttons: 152x132 px at x = 72 / 240 / 408 / 576, top y=334
+(vertically centered in the bar). Each button shows a 56x56 icon (center ~y+52) above
+a Montserrat 32 label (center ~y+104).
 
-### 4.1 Packet Framing Spec
-Packets use a 1-byte header, 1-byte length argument, variable payload array, and an optional simple checksum byte.
+| Button | Icon      | Active background |
+|--------|-----------|-------------------|
+| HEAT   | flame     | #880D08           |
+| AC     | snowflake | #26699D           |
+| FAN    | fan       | #2F8F83           |
+| AUTO   | auto      | #B07D2E           |
+
+* **Active** button: mode-specific background fill, icon and label white (#FFFFFF).
+* **Inactive** buttons are *flat*: no background fill (transparent), icon and label
+  dark gray #45474B. (Matches mockup - only the active modes show a colored box.)
+* Exactly one of HEAT/AC/AUTO is active at all times; default on boot is HEAT
+  (matches mockup). FAN is an independent on/off toggle that can be combined with
+  any mode — it shows its #2F8F83 fill whenever the fan is on, regardless of mode.
+
+### 3.3 Behavior (this phase - demo)
+* Defaults: current = 72°F, setpoint = 74°F, mode = HEAT.
+* Chevron buttons adjust the setpoint by +/-1°F per press, clamped to [50, 90]°F.
+  Long-press repeats at LVGL's default repeat rate after the long-press delay.
+* Mode buttons switch the active mode and restyle the bar immediately; the FAN
+  button toggles the fan on/off independently of the selected mode.
+* **Demo simulation:** while mode is HEAT or AC, the current temperature moves toward
+  the setpoint at ~0.1°F/s (6°F/min) and holds once within 0.5°F of it; AUTO holds
+  steady and fan state never affects temperature. This keeps the screen alive without
+  hardware and is replaced by real telemetry per Section 5.
+* Onboard LEDs mirror the active mode for debug: HEAT=red, AC=blue, AUTO=green, plus
+  orange whenever the fan is on (solid).
+
+## 4. STATE MODEL
+```c
+typedef enum { MODE_HEAT, MODE_AC, MODE_AUTO } thermo_mode_t;
+
+int16_t       current_temp_f; /* integer °F */
+int16_t       setpoint_f;     /* integer °F, clamped to [50, 90] */
+thermo_mode_t mode;           /* exactly one active at a time */
+bool          fan_on;         /* independent of mode — any mode + fan on/off */
+```
+Public API (`include/thermostat_state.h`): `thermo_init()`, `thermo_update(now_ms)`,
+`thermo_set_mode(m)`, `thermo_adjust_setpoint(delta)`, `thermo_set_fan(on)` /
+`thermo_get_fan()`, plus accessors.
+
+## 5. LIGHTWEIGHT SERIAL COMMUNICATION PROTOCOL (future host link)
+The Python daemon sanitizes sensor/HVAC data into deterministic byte streams so the
+STM32 never parses JSON. Framing is unchanged from the previous revision:
+
 `[START_BYTE: 0x02] [COMMAND_ID: 1 Byte] [DATA_LEN: 1 Byte] [DATA_BYTES] [END_BYTE: 0x03]`
 
-### 4.2 Telemetry Command IDs (Frequency: 1Hz - 2Hz)
-* **`0x10` (CPU Metric):** Data byte 1 = Load (0-100), Data byte 2 = Temp (°C)
-* **`0x11` (GPU Metric):** Data byte 1 = Load (0-100), Data byte 2 = Temp (°C)
-* **`0x12` (Network Metric):** Data bytes 1-4 = Net Speed encoded as float or fixed integer payload.
+Command IDs (defined in `thermostat_state.h`). Device-side handlers exist for
+0x50/0x51/0x53/0x54; 0x52 has no TX response path yet:
+* **`0x50` (SET_CURRENT_TEMP):** payload int16 little-endian, tenths of °F. Overwrites the current temperature (demo drift continues until real telemetry replaces it).
+* **`0x51` (SET_MODE):** payload 1 byte = `thermo_mode_t`.
+* **`0x52` (GET_STATE):** no payload; device will reply `[mode:1B][current int16 LE tenths °F][setpoint int16 LE]` — not implemented yet.
+* **`0x53` (SET_SETPOINT):** payload int16 little-endian, tenths of °F.
+* **`0x54` (SET_FAN):** payload 1 byte, 0=off 1=on. Independent of mode.
 
-### 4.3 Workplace Automation Toggles
-* **`0x20` (Microsoft Teams Status Broadcast):**
-  * Payload `0x01` (Available) -> Set Nav Status LED Indicator Green.
-  * Payload `0x02` (Busy/In-Meeting) -> Set Nav Status LED Indicator Red. Trigger local Desk Light warning modes.
-  * Payload `0x03` (Away) -> Dim UI Backlight, shift desk environment to idle arrays.
-* **`0x30` (GitLab Merge Request Alert):**
-  * Payload contains a character string string mapping the name of the branch or MR text.
-  * Action: Pause local task handling loop, parse text to an absolute notification popup widget overlaying current screens, pulse LEDs green.
+When real telemetry arrives, the demo simulation is disabled for the affected field.
 
-## 5. REACTION & EFFECT ARCHITECTURE (STATE ENGINE)
-The system moves through localized states dictated by asynchronous incoming events.
-stateDiagram-v2
-    [*] --> STATE_IDLE
-    
-    STATE_IDLE --> STATE_MEETING : Packet 0x20 (In Meeting)
-    STATE_MEETING --> STATE_IDLE : Packet 0x20 (Available)
-    
-    STATE_IDLE --> STATE_CELEBRATE : Packet 0x30 (MR Merged)
-    STATE_MEETING --> STATE_CELEBRATE : Packet 0x30 (MR Merged)
-    
-    state STATE_CELEBRATE {
-        [*] --> RunParticleAnimation
-        RunParticleAnimation --> PulseLEDsGreen
-    }
-    
-    STATE_CELEBRATE --> STATE_IDLE : Timer Exceeded (3 Seconds) / Restore Previous State
-
-
-### 5.1 LED Behavior Tables
-* **`STATE_IDLE`:** Solid subtle white backdrop lighting or slow-moving pastel rainbow gradient loop.
-* **`STATE_MEETING`:** Solid block scarlet/crimson lighting at 100% luminance. Block dynamic patterns.
-* **`STATE_CELEBRATE`:** High-frequency, green and white chasing pattern across individual addressable pixel sections.
-
-## 6. CODE CODE IMPLEMENTATION REQUIREMENTS FOR AI VISUAL AGENTS
-When writing C or Python automation blocks supporting this structure, follow these syntax constraints:
-1. **No Blocking Code:** Do not use `HAL_Delay()` anywhere in the main operational loops. Frame processing and UART sampling must happen strictly via non-blocking interrupts, timers (`HAL_GetTick()`), or FreeRTOS tasks.
-2. **Object Memory Bounds:** Use static memory or explicit LVGL object pooling structures for notification logs to avoid dynamic heap fragmentation (`malloc` runaways) inside embedded loops.
-3. **Python Independence:** The Chrome Web Extension or Graph API worker running on the computer must send data directly via local loopback web requests (`localhost:port`). It should not require authentication updates inside the raw embedded architecture directly.
+## 6. CODE IMPLEMENTATION REQUIREMENTS FOR AI VISUAL AGENTS
+1. **No Blocking Code:** no `HAL_Delay()` in the main loop; use `HAL_GetTick()`, LVGL timers, or non-blocking UART polling.
+2. **Static Allocation Only:** no `malloc` inside embedded loops; UI object pointers are module statics.
+3. **Framebuffers live in SDRAM** - never assume they fit internal RAM.
+4. **LVGL tick** is fed from `SysTick_Handler()`, not the main loop.
+5. **Generated assets, do not hand-edit:** `src/ui_font_temp.c` + `src/ui_font_unit.c`
+   (lv_font_conv output) and `include/ui_icons.h` (output of `tools/gen_icons.py`;
+   regenerate with Pillow installed).
+6. **No "ST" logo** anywhere in the UI.
