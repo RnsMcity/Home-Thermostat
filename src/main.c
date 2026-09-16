@@ -116,11 +116,12 @@ int main(void)
     BSP_LCD_Clear(LCD_COLOR_RED);
     progress_blink(); // Checkpoint 8: Display cleared to solid Red
 
-    /* 11. LVGL UI — double-buffered LTDC display + main screen with buttons */
-    lvgl_display_init();
+    /* 11. LVGL UI — double-buffered LTDC display, touch indev, main screen */
+    uint8_t ts_status = lvgl_display_init();
     ui_main_screen_create();
     progress_blink(); // Checkpoint 9: LVGL display + main screen ready
     DBG_LOG("LVGL UI online");
+    DBG_LOG("Touch Init Status: %u", ts_status);
 
     uint8_t rx_byte;
 

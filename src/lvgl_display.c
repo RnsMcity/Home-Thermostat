@@ -1,6 +1,7 @@
 #include "lvgl_display.h"
 #include "stm32f4xx_hal.h"
 #include "stm32469i_discovery_lcd.h"
+#include "stm32469i_discovery_ts.h"
 #include "stm32469i_discovery.h"
 
 /* SDRAM layout (16 MB @ 0xC0000000) — see lv_conf.h */
@@ -56,10 +57,27 @@ void LTDC_IRQHandler(void)
 }
 
 /* ---------------------------------------------------------------------------
- * Init
+ * Touch input (FT6206 on I2C1, PB8/PB9) — polled by LVGL's indev timer.
  * ------------------------------------------------------------------------- */
 
-void lvgl_display_init(void)
+static void ts_read_cb(lv_indev_t * indev, lv_indev_data_t * data)
+{
+    static TS_StateTypeDef ts_state;
+
+    if (BSP_TS_GetState(&ts_state) == TS_OK && ts_state.touchDetected > 0) {
+        data->point.x = ts_state.touchX[0];
+        data->point.y = ts_state.touchY[0];
+        data->state   = LV_INDEV_STATE_PRESSED;
+    } else {
+        data->state   = LV_INDEV_STATE_RELEASED;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * Init — returns the touch controller init status (TS_OK / TS_DEVICE_NOT_FOUND)
+ * ------------------------------------------------------------------------- */
+
+uint8_t lvgl_display_init(void)
 {
     lv_init();
 
@@ -96,4 +114,16 @@ void lvgl_display_init(void)
     __HAL_LTDC_CLEAR_FLAG(&hltdc_eval, LTDC_FLAG_RR | LTDC_FLAG_TE | LTDC_FLAG_FU);
     s_swap_pending = false;
     __HAL_LTDC_ENABLE_IT(&hltdc_eval, LTDC_IT_RR);
+
+    /* Touch input — BSP_TS_Init maps raw FT6206 coordinates to the 800x480
+     * landscape display. Without a working controller the UI still works via
+     * UART (CMD_UI_PRESS_BTN). */
+    uint8_t ts_status = BSP_TS_Init(800, 480);
+    if (ts_status == TS_OK) {
+        lv_indev_t * indev = lv_indev_create();
+        lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
+        lv_indev_set_read_cb(indev, ts_read_cb);
+    }
+
+    return ts_status;
 }
