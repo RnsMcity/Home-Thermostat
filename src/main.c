@@ -3,6 +3,8 @@
 
 #include "stm32f4xx_hal.h"
 #include "workspace_states.h"
+#include "lvgl_display.h"
+#include "ui_main_screen.h"
 #include "stm32469i_discovery_lcd.h"
 #include "stm32469i_discovery_sdram.h"
 #include "stm32469i_discovery.h"
@@ -35,6 +37,7 @@ static void progress_blink(void)
 void SysTick_Handler(void)
 {
     HAL_IncTick();
+    lv_tick_inc(1); /* LVGL tick — fed from the 1 ms timer interrupt */
 }
 
 int main(void)
@@ -48,15 +51,20 @@ int main(void)
     /* 2. Configure safe Status LED (LED_ORANGE is on PG6, safe from bus interfaces) */
     BSP_LED_Init(LED_ORANGE);
 
-    /* 3. Give external hardware (ST-Link / Terminal) a moment to stabilize */
+    /* 3. Initialize USART3 early so every later boot phase is observable on the VCP.
+     * Must run after SystemClock_Config() — HAL_UART_Init computes BRR from PCLK1. */
+    MX_USART3_UART_Init();
+    progress_blink(); // Checkpoint: UART online
+
+    /* 4. Give external hardware (ST-Link / Terminal) a moment to stabilize */
     HAL_Delay(500);
     progress_blink(); // Checkpoint 1
 
-    /* 4. State Machine setup */
+    /* 5. State Machine setup */
     state_machine_init();
     progress_blink(); // Checkpoint 2
 
-    /* 5. Initialize SDRAM (Framebuffer memory base at 0xC0000000) */
+    /* 6. Initialize SDRAM (Framebuffer memory base at 0xC0000000) */
     if (BSP_SDRAM_Init() != SDRAM_OK) {
         while (1) { 
             BSP_LED_Toggle(LED_ORANGE); 
@@ -71,23 +79,22 @@ int main(void)
     HAL_Delay(10);
     progress_blink(); // Checkpoint 4: SDRAM Integrity Verified
 
-    /* 6. Initialize LCD (DSI + LTDC + DMA2D + OTM8009A display driver) */
+    /* Route LTDC -> DSI before panel init so LP-command windows exist while the
+     * OTM8009A is being configured. HAL_DSI_DeInit/Init do not clear WCR, so this
+     * survives BSP_LCD_InitEx's internal re-init. */
+    extern DSI_HandleTypeDef hdsi_eval;
+    hdsi_eval.Instance->WCR |= DSI_WCR_LTDCEN;
+
+    /* 7. Initialize LCD (DSI + LTDC + DMA2D + OTM8009A display driver) */
     uint8_t lcd_status = BSP_LCD_InitEx(LCD_ORIENTATION_LANDSCAPE);
     progress_blink(); // Checkpoint 5: LCD Screen Driver Ready
 
-    /* 7. Configure LTDC layers pointing to the working SDRAM base address */
+    /* 8. Configure LTDC layers pointing to the working SDRAM base address */
     BSP_LCD_LayerDefaultInit(LTDC_ACTIVE_LAYER_BACKGROUND, LCD_FB_START_ADDRESS);
     BSP_LCD_LayerDefaultInit(LTDC_ACTIVE_LAYER_FOREGROUND, LCD_FB_START_ADDRESS);
     BSP_LCD_SetLayerVisible(LTDC_ACTIVE_LAYER_BACKGROUND, ENABLE);
     BSP_LCD_SetLayerVisible(LTDC_ACTIVE_LAYER_FOREGROUND, ENABLE);
-
-    /* Enable LTDC to DSI hardware routing */
-    extern DSI_HandleTypeDef hdsi_eval;
-    hdsi_eval.Instance->WCR |= DSI_WCR_LTDCEN;
     progress_blink(); // Checkpoint 6: Video stream routed
-
-    /* 8. Initialize USART3 (Only after LCD clock changes have settled) */
-    MX_USART3_UART_Init();
 
     /* 9. Output System Information and Status to Terminal */
     DBG_LOG("System online!");
@@ -103,16 +110,25 @@ int main(void)
     fb[400*800 + 200] = 0xFF00FF00; /* Green pixel at (200, 400) */
     progress_blink(); // Checkpoint 7: Raw writes to Framebuffer complete
 
-    /* Clear foreground using high-performance hardware acceleration (DMA2D) */
+    /* Clear foreground using high-performance hardware acceleration (DMA2D).
+     * Stays visible as a boot indicator until LVGL's first full frame lands. */
     BSP_LCD_SelectLayer(LTDC_ACTIVE_LAYER_FOREGROUND);
     BSP_LCD_Clear(LCD_COLOR_RED);
     progress_blink(); // Checkpoint 8: Display cleared to solid Red
+
+    /* 11. LVGL UI — double-buffered LTDC display + main screen with buttons */
+    lvgl_display_init();
+    ui_main_screen_create();
+    progress_blink(); // Checkpoint 9: LVGL display + main screen ready
+    DBG_LOG("LVGL UI online");
 
     uint8_t rx_byte;
 
     /* Main Superloop */
     while (1)
     {
+        lv_timer_handler(); /* non-blocking — renders pending UI work */
+
         state_machine_update(HAL_GetTick());
 
         /* Retrieve bytes arriving over the VCP connection */
@@ -152,13 +168,6 @@ static void MX_USART3_UART_Init(void)
     huart3.Init.OverSampling = UART_OVERSAMPLING_16;
 
     HAL_UART_Init(&huart3);
-
-    /* * CLOCK WORKAROUND:
-     * To prevent HAL from calculating wrong register values due to dynamic LCD
-     * clock modifications, manually set USART3 BRR based on actual APB1 45 MHz clock.
-     */
-    uint32_t pclk1_actual = 45000000; // 45 MHz
-    USART3->BRR = (pclk1_actual + (huart3.Init.BaudRate / 2)) / huart3.Init.BaudRate;
 }
 
 void SystemClock_Config(void)

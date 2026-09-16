@@ -368,6 +368,9 @@ void     BSP_LCD_DisplayOn(void);
   * @{
   */
 
+/* @brief LTDC handle variable (defined in stm32469i_discovery_lcd.c) */
+extern LTDC_HandleTypeDef hltdc_eval;
+
 /* @brief DMA2D handle variable */
 extern DMA2D_HandleTypeDef hdma2d_eval;
 

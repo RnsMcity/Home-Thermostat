@@ -21,6 +21,8 @@ typedef enum {
 #define CMD_NET_METRIC      0x12U
 #define CMD_TEAMS_STATUS    0x20U
 #define CMD_GITLAB_MR       0x30U
+/* UI control: payload = 1 byte button index (see ui_main_screen.h) */
+#define CMD_UI_PRESS_BTN    0x40U
 
 /* ---------------------------------------------------------------------------
  * Packet framing (Section 4.1 of SPECIFICATION.md)
@@ -143,6 +145,13 @@ void uart_parser_feed_byte(uart_parser_t *p, uint8_t byte);
 /* LED & UI hooks (mocked for compilation without hardware) ----------------- */
 void set_shelf_leds_raw(const rgb_color_t *colors, uint16_t count);
 void trigger_lvgl_ui_refresh(void);
+
+/* Pause the state machine's onboard-LED pattern for `ms` so a UI action can
+ * drive the LEDs without being overwritten on the next update. */
+void ui_set_led_override(uint32_t ms);
+
+/* Debug UART line printer (defined in workspace_states.c) */
+void dbg_print(const char *msg);
 
 /* Accessors ---------------------------------------------------------------- */
 system_state_t get_current_state(void);

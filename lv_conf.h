@@ -1,5 +1,6 @@
 /**
- * LVGL configuration for STM32F469I-DISCO (800×480 RGB LCD)
+ * LVGL configuration for STM32F469I-DISCO (800x480 DSI LCD via LTDC)
+ * Target: LVGL v9.x (installed 9.5)
  */
 
 #ifndef LV_CONF_H
@@ -7,45 +8,40 @@
 
 #include <stdint.h>
 
-/* 1 = Use all required libraries; or set to 0 for selective features */
-#define LV_USE_TASKHANDLER      1
-#define LV_USE_LOG              0
-#define LV_USE_ASSERT_MEM_INTEGRITY   0
-#define LV_USE_ASSERT_STR_INTEGRITY   0
-#define LV_USE_ASSERT_STYLE       0
+/* ---------------------------------------------------------------------------
+ * Color depth — must match the LTDC layer pixel format (ARGB8888).
+ * The OTM8009A panel runs in RGB888 mode and both LTDC layers are configured
+ * as ARGB8888 by the BSP, so LVGL renders 32-bit pixels directly.
+ * ------------------------------------------------------------------------- */
+#define LV_COLOR_DEPTH     32
 
-/* 0: system default, 1: override, 2: use lv_conf_internal.h only */
-#define LV_CONF_SUPPRESS_DEFINE_CHECK  1
+/* ---------------------------------------------------------------------------
+ * Memory pool — lives in external SDRAM (16 MB @ 0xC0000000).
+ * Layout:
+ *   0xC0000000  framebuffer 1 (active LTDC layer)   800*480*4 = 1,536,000 B
+ *   0xC0180000  framebuffer 2 (back buffer)         1,536,000 B
+ *   0xC0300000  LVGL heap (this pool)               8 MB -> ends 0xC0B00000
+ * ------------------------------------------------------------------------- */
+#define LV_MEM_SIZE    (8UL * 1024 * 1024)
+#define LV_MEM_ADR     0xC0300000U
 
-/* Tick source — updated by timer interrupt in real firmware */
-#ifndef LV_TICK_CUSTOM
-    #define LV_TICK_CUSTOM     0
-#endif
+/* ---------------------------------------------------------------------------
+ * Display driver — implemented in src/lvgl_display.c on top of the raw HAL
+ * LTDC API (direct render mode, double-buffered SDRAM framebuffers). The
+ * stock LV_USE_ST_LTDC driver is not used because it requires
+ * USE_HAL_LTDC_REGISTER_CALLBACKS=1, which this framework's hal_conf.h does
+ * not enable.
+ * ------------------------------------------------------------------------- */
 
-/* Memory configuration — external SDRAM on STM32F469 */
-#define LV_MEM_SIZE    (8UL * 1024 * 1024)   /* 8 MB SDRAM */
+/* ---------------------------------------------------------------------------
+ * Fonts — enable sizes as needed. The theme uses 14; the title uses 28.
+ * ------------------------------------------------------------------------- */
+#define LV_FONT_MONTSERRAT_14   1
+#define LV_FONT_MONTSERRAT_28   1
 
-/* Color depth: RGB565 for 16-bit display bus */
-#define LV_COLOR_DEPTH     16
-
-/* Display resolution */
-#define LV_HOR_RES_MAX     800
-#define LV_VER_RES_MAX     480
-
-/* Flush interface — double-buffered DMA in real firmware */
-#define LV_USE_FLUSH       1
-#define LV_DISP_DEF_REFR_PERIOD   30    /* ~33 FPS target */
-
-/* Partial refresh mode (for scrolling areas) */
-#define LV_USE_FULL_REFR      0
-
-/* Use Chrom-ART / DMA2D acceleration if available */
-#define LV_USE_GPU_STM32_DMA2D   1
-#if LV_USE_GPU_STM32_DMA2D
-    #define LV_GPU_DMA2D_CMSIS_INCLUDE "stm32f4xx_hal.h"
-#endif
-
-/* Enable basic widgets needed for the UI screens */
+/* ---------------------------------------------------------------------------
+ * Widgets needed for the UI screens (SPECIFICATION.md section 3)
+ * ------------------------------------------------------------------------- */
 #define LV_USE_ARC        1
 #define LV_USE_BTN        1
 #define LV_USE_CHART      1

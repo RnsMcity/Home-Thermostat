@@ -11,9 +11,9 @@ pio run -t monitor # serial monitor @ 115200 baud
 ```
 
 ## Architecture
-- **Display:** 800×480 RGB LCD via LTDC, Chrom-ART/DMA2D acceleration enabled (`lv_conf.h` → `LV_USE_GPU_STM32_DMA2D=1`)
+- **Display:** 800×480 DSI LCD (OTM8009A) via LTDC; LVGL renders directly into double-buffered SDRAM framebuffers (no GPU/DMA2D in `lv_conf.h`)
 - **Framework:** STM32Cube HAL (`framework = stm32cube`, defines: `STM32F469xx`, `USE_HAL_DRIVER`, `F_CPU=180000000L`)
-- **UI:** LVGL v9.1+ (`lvgl/lvgl@^9.1.0`), RGB565 color depth, 8MB SDRAM for memory pool
+- **UI:** LVGL v9.1+ (`lvgl/lvgl@^9.1.0`), ARGB8888/32bpp, 8MB SDRAM memory pool @0xC0300000
 - **Comms:** UART3 @ 115200 baud on PB10/PB11 → ST-LINK VCP (loopback to host Python daemon)
 - **LEDs:** WS2812B strip — `set_shelf_leds_raw()` is a stub, not yet wired to SPI DMA or TIM PWM
 
@@ -21,14 +21,21 @@ Full spec: `SPECIFICATION.md` — read before generating UI screens, packet pars
 
 ## Source layout
 ```
-src/main.c              — HAL init, UART3 setup, bare main loop (no LVGL/state machine yet)
+src/main.c              — HAL init, UART3 setup, main superloop (lv_timer_handler + state machine + UART poll)
 src/workspace_states.c  — State machine, telemetry handlers, UART parser, notification queue
-include/workspace_states.h — Types, command IDs, packet framing constants, public API
+src/lvgl_display.c      — LVGL port: double-buffered direct-mode LTDC display, flush/swap protocol, LTDC_IRQHandler
+src/ui_main_screen.c    — Main screen: title + "Pulse LEDs" button + state-display button, auto-demo press
+include/workspace_states.h — Types, command IDs (incl. CMD_UI_PRESS_BTN 0x40), packet framing constants, public API
+include/lvgl_display.h   — lvgl_display_init()
+include/ui_main_screen.h — ui_main_screen_create(), ui_press_button(idx)
 include/debug_uart.h     — Debug UART declarations (printf redirect via USART3 → ST-LINK VCP)
-lv_conf.h               — LVGL config (800×480, RGB565, DMA2D GPU accel, 8MB mem pool)
+lv_conf.h               — LVGL config (800×480, ARGB8888/32bpp, SDRAM heap @0xC0300000)
+docs/Learnings.md       — Non-obvious findings: why no stock LV_USE_ST_LTDC driver, SDRAM layout, build gotchas
 ```
 
 ## Critical constraints (agents miss these)
+- **`-DHSE_VALUE=8000000UL` is required** (in `platformio.ini`). This board's HSE crystal is 8 MHz; the framework hardcodes 25 MHz, which stretches every HAL tick/timeout ×3.125 in wall time and makes `HAL_DSI_Init` write an out-of-spec DSI PHY bit period. Removing it silently regresses boot timing — see `docs/Learnings.md`.
+- **Boot order matters:** init UART3 right after `SystemClock_Config()` (BRR is computed from PCLK1) but *before* SDRAM/LCD init, so all boot phases are observable; set `DSI_WCR_LTDCEN` before `BSP_LCD_InitEx()`.
 - **Never use `HAL_Delay()`** in main loops. Use `HAL_GetTick()`, non-blocking interrupts, or timer callbacks.
 - **No `malloc` inside embedded loops.** Static allocation only — notification queue is a fixed ring buffer (`NOTIF_QUEUE_MAX=16`).
 - **Frame buffers live in external SDRAM.** Double-buffering via DMA is required.

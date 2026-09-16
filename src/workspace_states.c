@@ -1,4 +1,5 @@
 #include "workspace_states.h"
+#include "ui_main_screen.h"
 #include <string.h>
 #include <math.h>
 #include <stdio.h>
@@ -37,6 +38,15 @@ static uint32_t g_celebrate_start_tick = 0;
 
 /* Demo auto-cycle tracking ------------------------------------------------- */
 static uint32_t g_last_cycle_tick = 0;
+
+/* LED override — while now_ms < this, the state machine skips its own LED
+ * writes so a UI action (e.g. button pulse) can drive the LEDs. ------------ */
+static uint32_t g_led_override_until = 0;
+
+void ui_set_led_override(uint32_t ms)
+{
+    g_led_override_until = HAL_GetTick() + ms;
+}
 
 /* ---------------------------------------------------------------------------
  * GPIO LED init for STM32469I-DISCO onboard LEDs
@@ -97,6 +107,10 @@ void state_machine_init(void)
 void state_machine_update(uint32_t now_ms)
 {
     static uint32_t last_log_tick = 0;
+
+    /* While a UI action owns the LEDs, skip the state machine's LED pattern
+     * (and its per-state logging). State transitions resume afterwards. */
+    if (now_ms >= g_led_override_until) {
 
     switch (g_current_state) {
 
@@ -160,11 +174,13 @@ void state_machine_update(uint32_t now_ms)
                               (phase == 1) ? GPIO_PIN_SET : GPIO_PIN_RESET);
             HAL_GPIO_WritePin(DEMO_LED_RED_PORT,    DEMO_LED_RED_PIN,
                               (phase == 2) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-            HAL_GPIO_WritePin(DEMO_LED_BLUE_PORT,   DEMO_LED_BLUE_PIN,
+            HAL_GPIO_WritePin(DEMO_LED_BLUE_PORT, DEMO_LED_BLUE_PIN,
                               (phase == 3) ? GPIO_PIN_SET : GPIO_PIN_RESET);
         }
         break;
     }
+
+    } /* end LED override guard */
 
     /* Drain notification queue → push to LVGL UI */
     char notif_buf[NOTIF_PAYLOAD_MAX];
@@ -364,6 +380,13 @@ static void uart_parser_dispatch(uart_parser_t *p)
         if (p->data_idx > 0) {
             p->data_buf[p->data_idx] = '\0';
             handle_gitlab_mr((const char *)p->data_buf);
+        }
+        break;
+
+    case CMD_UI_PRESS_BTN:
+        /* Payload: 1 byte button index (BTN_IDX_* in ui_main_screen.h) */
+        if (p->data_idx >= 1) {
+            ui_press_button(p->data_buf[0]);
         }
         break;
 
