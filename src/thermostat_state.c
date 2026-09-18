@@ -103,12 +103,13 @@ void thermo_init(void)
 
 void thermo_update(uint32_t now_ms)
 {
+#if THERMO_DEMO_SIM_ENABLED
     static uint32_t last_drift_tick = 0;
 
     /* Demo simulation: in HEAT/AC the current temp drifts toward the setpoint
      * at ~0.1 °F/s (one tenth per 100 ms) and holds within 0.3 °F of it.
-     * AUTO holds steady; fan state never affects temperature. Replaced by
-     * real telemetry via Section 5 later. */
+     * AUTO holds steady; fan state never affects temperature. Disabled by
+     * default — the thermistor feed in main.c owns g_current_tenths now. */
     if ((g_mode == MODE_HEAT || g_mode == MODE_AC) &&
         (now_ms - last_drift_tick >= 100)) {
         last_drift_tick = now_ms;
@@ -118,6 +119,9 @@ void thermo_update(uint32_t now_ms)
         if (diff > 3)       g_current_tenths++;
         else if (diff < -3) g_current_tenths--;
     }
+#else
+    (void)now_ms;
+#endif
 
     mode_leds_write(g_mode, g_fan_on);
 }
@@ -156,6 +160,15 @@ void thermo_adjust_setpoint(int16_t delta)
 void thermo_set_current_temp_f(int16_t temp_f)
 {
     g_current_tenths = (int16_t)((int32_t)temp_f * 10);
+}
+
+/* Sensor feed — clamped to a plausible range so a disconnected or saturated
+ * thermistor can't drive the display to nonsense values. */
+void thermo_set_current_temp_f_tenths(int32_t tenths)
+{
+    if (tenths < -400)  tenths = -400;   /* −40 °F */
+    if (tenths > 2120)  tenths = 2120;   /* 212 °F */
+    g_current_tenths = (int16_t)tenths;
 }
 
 void thermo_set_setpoint_f(int16_t setpoint_f)

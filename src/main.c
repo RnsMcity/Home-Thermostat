@@ -5,6 +5,7 @@
 #include "thermostat_state.h"
 #include "lvgl_display.h"
 #include "ui_main_screen.h"
+#include "adc_thermistor.h"
 #include "stm32469i_discovery_lcd.h"
 #include "stm32469i_discovery_sdram.h"
 #include "stm32469i_discovery.h"
@@ -51,15 +52,23 @@ int main(void)
     MX_USART3_UART_Init();
     progress_blink(); // Checkpoint: UART online
 
-    /* 4. Give external hardware (ST-Link / Terminal) a moment to stabilize */
+    /* 4. Thermistor ADC (PB1 / C8 "A0") — before LCD init so the SAI PLL's Q
+     * divider for the ADC is in place when BSP_LCD_InitEx() configures it */
+    bool adc_ok = adc_thermistor_init();
+    if (!adc_ok) {
+        DBG_LOG("ADC init failed — thermistor readout disabled");
+    }
+    progress_blink(); // Checkpoint: ADC online
+
+    /* 5. Give external hardware (ST-Link / Terminal) a moment to stabilize */
     HAL_Delay(500);
     progress_blink(); // Checkpoint 1
 
-    /* 5. Thermostat state model + onboard debug LEDs */
+    /* 6. Thermostat state model + onboard debug LEDs */
     thermo_init();
     progress_blink(); // Checkpoint 2
 
-    /* 6. Initialize SDRAM (Framebuffer memory base at 0xC0000000) */
+    /* 7. Initialize SDRAM (Framebuffer memory base at 0xC0000000) */
     if (BSP_SDRAM_Init() != SDRAM_OK) {
         while (1) { 
             BSP_LED_Toggle(LED_ORANGE); 
@@ -80,18 +89,18 @@ int main(void)
     extern DSI_HandleTypeDef hdsi_eval;
     hdsi_eval.Instance->WCR |= DSI_WCR_LTDCEN;
 
-    /* 7. Initialize LCD (DSI + LTDC + DMA2D + OTM8009A display driver) */
+    /* 8. Initialize LCD (DSI + LTDC + DMA2D + OTM8009A display driver) */
     uint8_t lcd_status = BSP_LCD_InitEx(LCD_ORIENTATION_LANDSCAPE);
     progress_blink(); // Checkpoint 5: LCD Screen Driver Ready
 
-    /* 8. Configure LTDC layers pointing to the working SDRAM base address */
+    /* 9. Configure LTDC layers pointing to the working SDRAM base address */
     BSP_LCD_LayerDefaultInit(LTDC_ACTIVE_LAYER_BACKGROUND, LCD_FB_START_ADDRESS);
     BSP_LCD_LayerDefaultInit(LTDC_ACTIVE_LAYER_FOREGROUND, LCD_FB_START_ADDRESS);
     BSP_LCD_SetLayerVisible(LTDC_ACTIVE_LAYER_BACKGROUND, ENABLE);
     BSP_LCD_SetLayerVisible(LTDC_ACTIVE_LAYER_FOREGROUND, ENABLE);
     progress_blink(); // Checkpoint 6: Video stream routed
 
-    /* 9. Output System Information and Status to Terminal */
+    /* 10. Output System Information and Status to Terminal */
     DBG_LOG("System online!");
     DBG_LOG("SYSCLK = %lu Hz", HAL_RCC_GetSysClockFreq());
     DBG_LOG("HCLK   = %lu Hz", HAL_RCC_GetHCLKFreq());
@@ -99,7 +108,7 @@ int main(void)
     DBG_LOG("PCLK2  = %lu Hz", HAL_RCC_GetPCLK2Freq());
     DBG_LOG("LCD Init Result Status: %u", lcd_status);
 
-    /* 10. Perform screen draw validation */
+    /* 11. Perform screen draw validation */
     fb[0] = 0xFF0000FF;         /* Blue pixel at (0,0) */
     fb[800 + 0] = 0xFFFF0000;    /* Red pixel at (1,0) */
     fb[400*800 + 200] = 0xFF00FF00; /* Green pixel at (200, 400) */
@@ -111,7 +120,7 @@ int main(void)
     BSP_LCD_Clear(LCD_COLOR_RED);
     progress_blink(); // Checkpoint 8: Display cleared to solid Red
 
-    /* 11. LVGL UI — double-buffered LTDC display, touch indev, main screen */
+    /* 12. LVGL UI — double-buffered LTDC display, touch indev, main screen */
     uint8_t ts_status = lvgl_display_init();
     ui_main_screen_create();
     progress_blink(); // Checkpoint 9: LVGL display + main screen ready
@@ -119,6 +128,7 @@ int main(void)
     DBG_LOG("Touch Init Status: %u", ts_status);
 
     uint8_t rx_byte;
+    uint32_t last_adc_log = 0;
 
     /* Main Superloop */
     while (1)
@@ -126,6 +136,22 @@ int main(void)
         lv_timer_handler(); /* non-blocking — renders pending UI work */
 
         thermo_update(HAL_GetTick());   /* demo drift + mode LED, non-blocking */
+
+        /* Thermistor readout at ~1 Hz — feeds the current-temp state */
+        if (adc_ok && HAL_GetTick() - last_adc_log >= 1000) {
+            last_adc_log = HAL_GetTick();
+            uint16_t raw = adc_thermistor_read_raw();
+            int32_t f_tenths;
+
+            if (adc_thermistor_raw_to_temp_f_tenths(raw, &f_tenths)) {
+                thermo_set_current_temp_f_tenths(f_tenths);
+                DBG_LOG("ADC A0 raw=%u (%lu mV) -> %d.%dF",
+                        raw, (unsigned long)(raw * 3300UL / 4095),
+                        f_tenths / 10, (f_tenths < 0 ? -f_tenths : f_tenths) % 10);
+            } else {
+                DBG_LOG("ADC A0 read invalid (raw=%u)", raw);
+            }
+        }
 
         /* Retrieve bytes arriving over the VCP connection */
         if (HAL_UART_Receive(&huart3, &rx_byte, 1, 0) == HAL_OK)

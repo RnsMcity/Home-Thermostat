@@ -21,6 +21,12 @@ typedef enum {
 #define THERMO_SETPOINT_MAX   90
 #define THERMO_SETPOINT_STEP  1
 
+/* Demo temperature drift — set to 1 to re-enable the simulated current-temp
+ * drift for testing without a sensor. The thermistor feed (main.c) overwrites
+ * g_current_tenths every second while enabled, so leave this at 0 in normal
+ * operation. */
+#define THERMO_DEMO_SIM_ENABLED   0
+
 /* ---------------------------------------------------------------------------
  * UART command IDs for the future host link (Section 5 of SPECIFICATION.md).
  * The parser accepts these now; GET_STATE has no TX path yet.
@@ -74,6 +80,9 @@ bool thermo_get_fan(void);
 /* Host-link setters (Section 5) — overwrite the demo values */
 void thermo_set_current_temp_f(int16_t temp_f);
 void thermo_set_setpoint_f(int16_t setpoint_f);
+
+/* Sensor feed — tenths of °F, clamped to [−40.0, 212.0] °F */
+void thermo_set_current_temp_f_tenths(int32_t tenths);
 
 thermo_mode_t thermo_get_mode(void);
 int16_t       thermo_get_current_temp_f(void);   /* rounded to whole °F */
