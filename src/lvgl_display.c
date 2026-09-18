@@ -14,6 +14,49 @@
 static volatile bool s_swap_pending = false;
 
 /* ---------------------------------------------------------------------------
+ * Backlight / idle dimming — the OTM8009A drives its own LED backlight via
+ * DSI register 0x51 (WRDISBV, 0x00..0xFF); there is no MCU-side PWM pin.
+ * ------------------------------------------------------------------------- */
+#define BACKLIGHT_FULL    0x7F   /* matches the level BSP init programs        */
+#define BACKLIGHT_DIM     0x10   /* ~6% — still readable at a glance          */
+#define DIM_TIMEOUT_MS    5000   /* idle time before dimming starts            */
+#define FADE_PERIOD_MS    30     /* ramp timer period                          */
+#define FADE_STEP         8      /* levels per tick → full↔dim in ~400 ms      */
+
+static uint8_t  s_backlight = BACKLIGHT_FULL;
+static uint32_t s_last_activity;   /* lv_tick ms of last touch                 */
+
+/* Write the panel backlight register. Callers must only invoke on change —
+ * DSI_IO_WriteCmd blocks briefly on the command lane. */
+static void backlight_set(uint8_t level)
+{
+    uint8_t cmd[2] = { OTM8009A_CMD_WRDISBV, level };
+
+    s_backlight = level;
+    DSI_IO_WriteCmd(1, cmd);
+}
+
+/* Periodic ramp toward the brightness target for the current activity state. */
+static void dim_timer_cb(lv_timer_t * timer)
+{
+    (void)timer;
+
+    uint8_t target = (lv_tick_elaps(s_last_activity) < DIM_TIMEOUT_MS)
+                     ? BACKLIGHT_FULL : BACKLIGHT_DIM;
+
+    if (s_backlight == target) return;
+
+    if (s_backlight < target) {
+        s_backlight += FADE_STEP;
+        if (s_backlight > target) s_backlight = target;
+    } else {
+        s_backlight -= FADE_STEP;
+        if (s_backlight < target) s_backlight = target;
+    }
+    backlight_set(s_backlight);
+}
+
+/* ---------------------------------------------------------------------------
  * Flush callbacks — direct render mode with double buffering:
  * LVGL renders straight into one of the two SDRAM framebuffers. After the
  * last area of a refresh we point the LTDC layer at that buffer, effective
@@ -65,6 +108,7 @@ static void ts_read_cb(lv_indev_t * indev, lv_indev_data_t * data)
     static TS_StateTypeDef ts_state;
 
     if (BSP_TS_GetState(&ts_state) == TS_OK && ts_state.touchDetected > 0) {
+        s_last_activity = lv_tick_get();   /* any touch resets the idle timer */
         data->point.x = ts_state.touchX[0];
         data->point.y = ts_state.touchY[0];
         data->state   = LV_INDEV_STATE_PRESSED;
@@ -123,6 +167,12 @@ uint8_t lvgl_display_init(void)
         lv_indev_t * indev = lv_indev_create();
         lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
         lv_indev_set_read_cb(indev, ts_read_cb);
+
+        /* Idle dimming — only armed when touch can wake the display again.
+         * The panel register already holds BACKLIGHT_FULL from BSP init, so
+         * no initial write is needed. */
+        s_last_activity = lv_tick_get();
+        lv_timer_create(dim_timer_cb, FADE_PERIOD_MS, NULL);
     }
 
     return ts_status;
