@@ -1,7 +1,7 @@
 # SYSTEM SPECIFICATION: DIGITAL THERMOSTAT UI
 # Target Hardware: STM32F469I-DISCO
 # UI Framework: LVGL 9.x (software renderer, ARGB8888)
-# Reference Mockup: mockup-ui.jpg
+# UI Screenshot: mockup-ui.jpg (framebuffer capture of the live UI)
 
 ## 1. SYSTEM ARCHITECTURE OVERVIEW
 The system is a touch-operated digital thermostat front-end running on an STM32F469I-DISCO.

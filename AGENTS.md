@@ -1,7 +1,7 @@
 # AGENTS.md — DIGITAL THERMOSTAT UI (STM32F469I-DISCO)
 
 ## Project type
-PlatformIO embedded C for STM32F469NIH6 (Cortex-M4 @ 180 MHz, 2 MB Flash). Board in `platformio.ini` is `disco_f469ni`. External SDRAM @0xC0000000 — layout in `lv_conf.h`. Reference mockup: `mockup-ui.jpg` (no "ST" logo anywhere in the UI).
+PlatformIO embedded C for STM32F469NIH6 (Cortex-M4 @ 180 MHz, 2 MB Flash). Board in `platformio.ini` is `disco_f469ni`. External SDRAM @0xC0000000 — layout in `lv_conf.h`. `mockup-ui.jpg` is a framebuffer capture of the live UI (regenerate via openocd SDRAM dump + `tools/capture_screen.py` — see that file's header comment).
 
 ## Build & verify
 ```
@@ -38,6 +38,7 @@ include/ui_icons.h      — GENERATED icon images (tools/gen_icons.py); do not h
 lib/stm32_bsp/          — Vendored ST BSP: stm32469i_discovery_{lcd,sdram,ts}.c + Components/ft6x06 driver
 lv_conf.h               — LVGL config; SDRAM layout (FB1 @0xC0000000, FB2 @0xC0180000, 8 MB heap @0xC0300000)
 tools/gen_icons.py      — Regenerates include/ui_icons.h (needs Pillow: pip install pillow)
+tools/capture_screen.py — Converts an openocd SDRAM framebuffer dump into mockup-ui.jpg/.png
 ```
 
 ## Critical constraints (agents miss these)
